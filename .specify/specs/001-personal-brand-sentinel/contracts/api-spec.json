@@ -1,0 +1,221 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Personal Brand Sentinel API",
+    "version": "0.1.0",
+    "description": "Panaversity-compliant Sentinel for personal brand social media posting. Accepts drafts, routes to Telegram for approval, dispatches to Postiz."
+  },
+  "servers": [
+    { "url": "http://localhost:8103", "description": "Local dev" },
+    { "url": "http://<vm-ip>:8103", "description": "Oracle VM" }
+  ],
+  "paths": {
+    "/dispatch": {
+      "post": {
+        "summary": "Submit a draft for approval and posting",
+        "operationId": "dispatch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sync result (no reply_to)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DispatchResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted — async processing (reply_to set)"
+          },
+          "400": {
+            "description": "Invalid request — missing fields or unknown platform"
+          }
+        }
+      }
+    },
+    "/callback": {
+      "post": {
+        "summary": "Receive approval/rejection from n8n Telegram bridge",
+        "operationId": "callback",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallbackRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Callback processed — post dispatched or rejection logged"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Deep health check — pings all managed workers",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Health status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/capabilities": {
+      "get": {
+        "summary": "List sentinel capabilities and worker registry",
+        "operationId": "capabilities",
+        "responses": {
+          "200": {
+            "description": "Capabilities listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cleanup": {
+      "get": {
+        "summary": "Purge expired approval requests",
+        "operationId": "cleanup",
+        "responses": {
+          "200": {
+            "description": "Cleanup complete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "purged": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DispatchRequest": {
+        "type": "object",
+        "required": ["content", "platforms"],
+        "properties": {
+          "content": { "type": "string", "description": "Post content (plain text or HTML)" },
+          "platforms": {
+            "type": "array",
+            "items": { "type": "string", "enum": ["x", "linkedin", "threads", "bluesky"] },
+            "description": "Target platforms"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["now", "schedule", "draft"],
+            "default": "now"
+          },
+          "scheduled_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 — required if type=schedule"
+          },
+          "deadline": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Expiry — task skipped if passed"
+          },
+          "reply_to": {
+            "type": "string",
+            "format": "uri",
+            "description": "Callback URL — async mode if set"
+          },
+          "source": {
+            "type": "string",
+            "enum": ["manual", "ai", "cron"],
+            "default": "manual"
+          }
+        }
+      },
+      "DispatchResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["completed", "expired", "rejected", "error", "accepted"]
+          },
+          "draft_id": { "type": "string" },
+          "error": { "type": "string" },
+          "confidence": { "$ref": "#/components/schemas/Confidence" }
+        }
+      },
+      "CallbackRequest": {
+        "type": "object",
+        "required": ["draft_id", "status"],
+        "properties": {
+          "draft_id": { "type": "string" },
+          "status": { "type": "string", "enum": ["approved", "rejected"] },
+          "reason": { "type": "string" }
+        }
+      },
+      "Confidence": {
+        "type": "object",
+        "properties": {
+          "retrieval": { "type": "number", "minimum": 0, "maximum": 1 },
+          "generation": { "type": "number", "minimum": 0, "maximum": 1 },
+          "combined": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "enum": ["ok", "degraded"] },
+          "workers": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "version": { "type": "string" }
+        }
+      },
+      "CapabilitiesResponse": {
+        "type": "object",
+        "properties": {
+          "sentinel_type": { "type": "string" },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "workers": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

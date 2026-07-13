@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sentinel
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./data/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh
+      - ./data/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  sentinel:
+    build: ./sentinels/personal-brand
+    ports:
+      - "8103:8103"
+    environment:
+      DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      POSTIZ_API_URL: ${POSTIZ_API_URL:-http://postiz:5000}
+      POSTIZ_API_KEY: ${POSTIZ_API_KEY}
+      POSTIZ_INTEGRATION_X: ${POSTIZ_INTEGRATION_X}
+      POSTIZ_INTEGRATION_LINKEDIN: ${POSTIZ_INTEGRATION_LINKEDIN}
+      POSTIZ_INTEGRATION_THREADS: ${POSTIZ_INTEGRATION_THREADS}
+      POSTIZ_INTEGRATION_BLUESKY: ${POSTIZ_INTEGRATION_BLUESKY}
+      SCHEDULED_POST_TIME: ${SCHEDULED_POST_TIME:-10:00}
+      WORKER_TIMEOUT_SECONDS: ${WORKER_TIMEOUT_SECONDS:-15}
+      SENTINEL_TIMEOUT_SECONDS: ${SENTINEL_TIMEOUT_SECONDS:-20}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SENTINEL_PORT: 8103
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${N8N_WEBHOOK_PUBLIC_URL}
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postiz:
+    image: ghcr.io/gofireflyio/postiz:latest
+    ports:
+      - "5000:5000"
+    environment:
+      POSTIZ_JWT_SECRET: ${POSTIZ_JWT_SECRET}
+      DATABASE_URL: postgresql://postiz:${POSTIZ_DB_PASSWORD}@postgres:5432/postiz
+      NODE_ENV: production
+    volumes:
+      - postiz_data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  janitor:
+    build: ./janitor
+    environment:
+      DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
+      JANITOR_INTERVAL_SECONDS: ${JANITOR_INTERVAL_SECONDS:-60}
+      STALE_THRESHOLD_MINUTES: ${STALE_THRESHOLD_MINUTES:-5}
+      MAX_RETRIES: ${MAX_RETRIES:-3}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  n8n_data:
+  postiz_data:
