@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 
-from temporalio.client import Client, Schedule, ScheduleAction, ScheduleSpec
+from temporalio.client import Client, Schedule, ScheduleActionStartWorkflow, ScheduleSpec
 from temporalio.worker import Worker
 
 from workflow import JanitorWorkflow
@@ -27,7 +27,7 @@ async def ensure_schedule(client: Client):
         await client.create_schedule(
             "janitor-cron",
             Schedule(
-                action=ScheduleAction.start_workflow(
+                action=ScheduleActionStartWorkflow(
                     JanitorWorkflow,
                     id="janitor-workflow-id",
                     task_queue=TASK_QUEUE,
