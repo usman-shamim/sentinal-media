@@ -575,13 +575,15 @@ async def dispatch(req: DispatchRequest, background_tasks: BackgroundTasks, requ
             handle = await temporal_client.start_workflow(
                 ApprovalWorkflow.run,
                 draft_id,
-                req.content,
-                req.platforms,
-                req.reply_to,
-                settings.n8n_webhook_url,
-                settings.telegram_chat_id,
-                settings.postiz_api_url,
-                settings.postiz_api_key,
+                args=[
+                    req.content,
+                    req.platforms,
+                    req.reply_to,
+                    settings.n8n_webhook_url,
+                    settings.telegram_chat_id,
+                    settings.postiz_api_url,
+                    settings.postiz_api_key,
+                ],
                 id=draft_id,
                 task_queue=settings.temporal_task_queue,
             )
