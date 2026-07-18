@@ -13,6 +13,7 @@ from datetime import timedelta
 from typing import Optional
 
 from temporalio import activity, workflow
+from temporalio.common import RetryPolicy
 
 logger = logging.getLogger("temporal-workflows")
 
@@ -210,7 +211,7 @@ class ApprovalWorkflow:
             send_approval_activity,
             args=[draft_id, content, platforms, n8n_url, chat_id],
             start_to_close_timeout=timedelta(seconds=30),
-            retry_policy={"maximum_attempts": 3},
+            retry_policy=RetryPolicy(maximum_attempts=3),
         )
         if not sent:
             logger.warning("Approval request failed for %s", draft_id)
@@ -251,7 +252,7 @@ class ApprovalWorkflow:
             postiz_dispatch_activity,
             args=[draft_id, content, platforms, postiz_url, postiz_key],
             start_to_close_timeout=timedelta(seconds=60),
-            retry_policy={"maximum_attempts": 2},
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
 
         # Step 4: Log to database
