@@ -203,12 +203,16 @@ services:
   janitor:
     build: ./janitor
     environment:
+      TEMPORAL_URL: temporal:7233
+      TEMPORAL_TASK_QUEUE: janitor-tasks
+      JANITOR_CRON: ${JANITOR_CRON:-*/1 * * * *}
       DATABASE_URL: postgresql://sentinel:${POSTGRES_PASSWORD}@postgres:5432/sentinel
-      JANITOR_INTERVAL_SECONDS: ${JANITOR_INTERVAL_SECONDS:-60}
       STALE_THRESHOLD_MINUTES: ${STALE_THRESHOLD_MINUTES:-5}
       MAX_RETRIES: ${MAX_RETRIES:-3}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
+      temporal:
+        condition: service_started
       postgres:
         condition: service_healthy
     restart: unless-stopped
