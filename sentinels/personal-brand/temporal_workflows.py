@@ -7,11 +7,11 @@ restricts non-deterministic modules like httpx and asyncpg inside
 workflow definitions. All I/O lives in activities.
 """
 
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Optional
 
-import asyncio
 from temporalio import activity, workflow
 
 logger = logging.getLogger("temporal-workflows")
@@ -192,6 +192,13 @@ class ApprovalWorkflow:
     if the sentinel container restarts. It waits for a signal from /callback.
     """
 
+    def __init__(self) -> None:
+        self._decision: Optional[dict] = None
+
+    @workflow.signal
+    def approval_decision(self, payload: dict) -> None:
+        self._decision = payload
+
     @workflow.run
     async def run(self, draft_id: str, content: str, platforms: list[str],
                   reply_to: Optional[str], n8n_url: str, chat_id: str,
@@ -201,7 +208,7 @@ class ApprovalWorkflow:
         # Step 1: Send approval request to n8n/Telegram
         sent = await workflow.execute_activity(
             send_approval_activity,
-            draft_id, content, platforms, n8n_url, chat_id,
+            args=[draft_id, content, platforms, n8n_url, chat_id],
             start_to_close_timeout=timedelta(seconds=30),
             retry_policy={"maximum_attempts": 3},
         )
@@ -210,17 +217,18 @@ class ApprovalWorkflow:
 
         # Step 2: Wait for callback signal from /callback endpoint
         try:
-            decision = await workflow.wait_for_signal(
-                "approval_decision",
-                timeout=timedelta(seconds=approval_timeout),
+            await asyncio.wait_for(
+                workflow.wait_condition(lambda: self._decision is not None),
+                timeout=approval_timeout,
             )
+            decision = self._decision or {}
         except asyncio.TimeoutError:
             logger.warning("Approval %s timed out", draft_id)
             if reply_to:
                 await workflow.execute_activity(
                     send_callback_activity,
-                    f"{reply_to}/callback",
-                    {"draft_id": draft_id, "status": "expired"},
+                    args=[f"{reply_to}/callback",
+                          {"draft_id": draft_id, "status": "expired"}],
                     start_to_close_timeout=timedelta(seconds=10),
                 )
             return {"status": "expired", "draft_id": draft_id}
@@ -232,8 +240,8 @@ class ApprovalWorkflow:
             if reply_to:
                 await workflow.execute_activity(
                     send_callback_activity,
-                    f"{reply_to}/callback",
-                    {"draft_id": draft_id, "status": "rejected", "reason": reason},
+                    args=[f"{reply_to}/callback",
+                          {"draft_id": draft_id, "status": "rejected", "reason": reason}],
                     start_to_close_timeout=timedelta(seconds=10),
                 )
             return {"status": "rejected", "draft_id": draft_id, "reason": reason}
@@ -241,18 +249,19 @@ class ApprovalWorkflow:
         # Step 3: Dispatch to Postiz (with retries)
         result = await workflow.execute_activity(
             postiz_dispatch_activity,
-            draft_id, content, platforms, postiz_url, postiz_key,
+            args=[draft_id, content, platforms, postiz_url, postiz_key],
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy={"maximum_attempts": 2},
         )
 
         # Step 4: Log to database
+        platform_logs = [
+            {"platform": p, "status": d.get("status"), "postiz_id": d.get("postiz_id")}
+            for p, d in result.get("platforms", {}).items()
+        ]
         await workflow.execute_activity(
             db_log_activity,
-            draft_id, content,
-            [{"platform": p, "status": d.get("status"), "postiz_id": d.get("postiz_id")}
-             for p, d in result.get("platforms", {}).items()],
-            result,
+            args=[draft_id, content, platform_logs, result],
             start_to_close_timeout=timedelta(seconds=10),
         )
 
@@ -260,8 +269,8 @@ class ApprovalWorkflow:
         if reply_to:
             await workflow.execute_activity(
                 send_callback_activity,
-                f"{reply_to}/callback",
-                {"draft_id": draft_id, "status": result["status"], "result": result},
+                args=[f"{reply_to}/callback",
+                      {"draft_id": draft_id, "status": result["status"], "result": result}],
                 start_to_close_timeout=timedelta(seconds=15),
             )
 
