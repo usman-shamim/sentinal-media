@@ -531,7 +531,7 @@ async def capabilities():
     )
 
 @app.post("/dispatch")
-async def dispatch(req: DispatchRequest, background_tasks: BackgroundTasks):
+async def dispatch(req: DispatchRequest, background_tasks: BackgroundTasks, request: Request):
     draft_id = f"draft_{uuid.uuid4().hex[:12]}"
 
     if is_expired(req.deadline):
@@ -572,7 +572,7 @@ async def dispatch(req: DispatchRequest, background_tasks: BackgroundTasks):
     temporal_client: TemporalClient | None = getattr(request.app.state, "temporal_client", None)
     if temporal_client:
         try:
-            await temporal_client.execute_workflow(
+            handle = await temporal_client.start_workflow(
                 ApprovalWorkflow.run,
                 draft_id,
                 req.content,
@@ -584,9 +584,8 @@ async def dispatch(req: DispatchRequest, background_tasks: BackgroundTasks):
                 settings.postiz_api_key,
                 id=draft_id,
                 task_queue=settings.temporal_task_queue,
-                execution_timeout=timedelta(minutes=10),
             )
-            log.info("Started Temporal workflow %s for dispatch", draft_id)
+            log.info("Started Temporal workflow %s (handle=%s)", draft_id, handle.id)
         except Exception as e:
             log.error("Temporal workflow failed for %s, falling back: %s", draft_id, e)
             if req.reply_to:
@@ -610,7 +609,7 @@ async def dispatch(req: DispatchRequest, background_tasks: BackgroundTasks):
     )
 
 @app.post("/callback")
-async def callback(req: CallbackRequest, background_tasks: BackgroundTasks):
+async def callback(req: CallbackRequest, background_tasks: BackgroundTasks, request: Request):
     approval = await db.get_approval(req.draft_id)
     if not approval:
         return {"status": "error", "error": "draft_id not found"}
