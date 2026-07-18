@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from temporalio import workflow, activity
+from temporalio.common import RetryPolicy
 
 # ── Activities ──────────────────────────────────────────────────────────
 
@@ -69,7 +70,7 @@ class JanitorWorkflow:
         cleaned = await workflow.execute_activity(
             reset_stale_jobs,
             start_to_close_timeout=timedelta(seconds=30),
-            retry_policy={"maximum_attempts": 2},
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
         workflow.logger.info("Janitor cleaned %d stale jobs", cleaned)
         return cleaned
