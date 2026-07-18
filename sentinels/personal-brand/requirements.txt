@@ -5,3 +5,4 @@ pydantic>=2.9.0
 pydantic-settings>=2.6.0
 asyncpg>=0.30.0
 python-dateutil>=2.9.0
+temporalio>=1.12.0

@@ -4,7 +4,7 @@ import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 import httpx
@@ -13,6 +13,10 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+from temporalio.client import Client as TemporalClient
+from temporalio.worker import Worker as TemporalWorker
+
+from temporal_workflows import ApprovalWorkflow
 
 # ─── Config ─────────────────────────────────────────────────────────────────
 
@@ -32,6 +36,8 @@ class Settings(BaseSettings):
     sentinel_timeout_seconds: int = 20
     log_level: str = "INFO"
     sentinel_port: int = 8103
+    temporal_url: str = "temporal:7233"
+    temporal_task_queue: str = "sentinel-tasks"
 
     model_config = {"env_prefix": "", "case_sensitive": False}
 
@@ -442,7 +448,34 @@ async def process_approved_dispatch(draft_id: str, content: str,
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.connect()
+
+    # Connect to Temporal and start a worker for ApprovalWorkflow
+    temporal_client = None
+    temporal_worker = None
+    try:
+        temporal_client = await TemporalClient.connect(settings.temporal_url)
+        temporal_worker = TemporalWorker(
+            temporal_client,
+            task_queue=settings.temporal_task_queue,
+            workflows=[ApprovalWorkflow],
+            activities=[],
+        )
+        # Run worker in background task
+        asyncio.create_task(temporal_worker.run())
+        log.info("Temporal worker started on queue %s", settings.temporal_task_queue)
+        app.state.temporal_client = temporal_client
+        app.state.temporal_worker = temporal_worker
+    except Exception as e:
+        log.warning("Temporal not available, falling back to BackgroundTasks: %s", e)
+        app.state.temporal_client = None
+        app.state.temporal_worker = None
+
     yield
+
+    if temporal_worker:
+        temporal_worker.cancel()
+    if temporal_client:
+        temporal_client.close()
     await db.disconnect()
 
 app = FastAPI(
@@ -535,25 +568,45 @@ async def dispatch(req: DispatchRequest, background_tasks: BackgroundTasks):
     if not sent:
         log.warning("approval request failed for %s, queued for retry", draft_id)
 
-    if req.reply_to:
+    # Try Temporal workflow for durable execution
+    temporal_client: TemporalClient | None = getattr(request.app.state, "temporal_client", None)
+    if temporal_client:
+        try:
+            await temporal_client.execute_workflow(
+                ApprovalWorkflow.run,
+                draft_id,
+                req.content,
+                req.platforms,
+                req.reply_to,
+                settings.n8n_webhook_url,
+                settings.telegram_chat_id,
+                settings.postiz_api_url,
+                settings.postiz_api_key,
+                id=draft_id,
+                task_queue=settings.temporal_task_queue,
+                execution_timeout=timedelta(minutes=10),
+            )
+            log.info("Started Temporal workflow %s for dispatch", draft_id)
+        except Exception as e:
+            log.error("Temporal workflow failed for %s, falling back: %s", draft_id, e)
+            if req.reply_to:
+                background_tasks.add_task(
+                    process_async_dispatch,
+                    draft_id, req.content, req.platforms,
+                    req.reply_to, req.type, req.scheduled_at, req.source,
+                )
+    elif req.reply_to:
         background_tasks.add_task(
             process_async_dispatch,
             draft_id, req.content, req.platforms,
             req.reply_to, req.type, req.scheduled_at, req.source,
         )
-        return JSONResponse(
-            status_code=202,
-            content=DispatchResponse(
-                status="accepted", draft_id=draft_id
-            ).model_dump(),
-        )
 
-    return DispatchResponse(
-        status="accepted",
-        draft_id=draft_id,
-        confidence=Confidence(
-            retrieval=0.0, generation=0.0, combined=0.0,
-        ),
+    return JSONResponse(
+        status_code=202,
+        content=DispatchResponse(
+            status="accepted", draft_id=draft_id
+        ).model_dump(),
     )
 
 @app.post("/callback")
@@ -569,32 +622,47 @@ async def callback(req: CallbackRequest, background_tasks: BackgroundTasks):
         await db.update_approval_status(req.draft_id, "expired")
         return {"status": "expired"}
 
+    # Try to signal the Temporal workflow
+    temporal_client: TemporalClient | None = getattr(request.app.state, "temporal_client", None)
+    if temporal_client:
+        try:
+            handle = temporal_client.get_workflow_handle(req.draft_id)
+            await handle.signal("approval_decision", {"status": req.status, "reason": req.reason})
+            log.info("Signaled workflow %s with %s", req.draft_id, req.status)
+        except Exception as e:
+            log.warning("Failed to signal workflow %s, using fallback: %s", req.draft_id, e)
+            # Fall through to legacy path
+            temporal_client = None
+
     if req.status == "approved":
         await db.update_approval_status(req.draft_id, "approved")
         reply_to = approval.get("reply_to")
-        background_tasks.add_task(
-            process_approved_dispatch,
-            req.draft_id,
-            approval["content"],
-            approval["platforms"],
-            reply_to,
-        )
+        if not temporal_client:
+            # Fallback: use BackgroundTasks
+            background_tasks.add_task(
+                process_approved_dispatch,
+                req.draft_id,
+                approval["content"],
+                approval["platforms"],
+                reply_to,
+            )
         return {"status": "approved", "dispatched": True}
 
     await db.update_approval_status(req.draft_id, "rejected")
     log.info("draft %s rejected: %s", req.draft_id, req.reason or "no reason")
 
-    reply_to = approval.get("reply_to")
-    if reply_to:
-        client = await get_http()
-        try:
-            await client.post(
-                f"{reply_to}/callback",
-                json={"draft_id": req.draft_id, "status": "rejected", "reason": req.reason},
-                timeout=settings.worker_timeout_seconds,
-            )
-        except Exception as e:
-            log.error("failed to send rejection callback to %s: %s", reply_to, e)
+    if not temporal_client:
+        reply_to = approval.get("reply_to")
+        if reply_to:
+            client = await get_http()
+            try:
+                await client.post(
+                    f"{reply_to}/callback",
+                    json={"draft_id": req.draft_id, "status": "rejected", "reason": req.reason},
+                    timeout=settings.worker_timeout_seconds,
+                )
+            except Exception as e:
+                log.error("failed to send rejection callback to %s: %s", reply_to, e)
 
     return {"status": "rejected"}
 
