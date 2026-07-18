@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 
-from temporalio.client import Client
+from temporalio.client import Client, Schedule, ScheduleAction, ScheduleSpec
 from temporalio.worker import Worker
 
 from workflow import JanitorWorkflow
@@ -23,28 +23,26 @@ CRON_SCHEDULE = os.getenv("JANITOR_CRON", "*/1 * * * *")  # every minute
 
 async def ensure_schedule(client: Client):
     """Register the janitor Cron Schedule if it doesn't exist."""
-    from temporalio.client import Schedule, ScheduleAction, ScheduleSpec, ScheduleOptions
-
-    schedules = await client.list_schedules()
-    existing = [s async for s in schedules]
-    if any(s.schedule_id == "janitor-cron" for s in existing):
-        logger.info("Janitor cron schedule already exists")
-        return
-
-    await client.create_schedule(
-        "janitor-cron",
-        Schedule(
-            action=ScheduleAction.start_workflow(
-                JanitorWorkflow,
-                task_queue=TASK_QUEUE,
+    try:
+        await client.create_schedule(
+            "janitor-cron",
+            Schedule(
+                action=ScheduleAction.start_workflow(
+                    JanitorWorkflow,
+                    id="janitor-workflow-id",
+                    task_queue=TASK_QUEUE,
+                ),
+                spec=ScheduleSpec(
+                    cron_expressions=[CRON_SCHEDULE],
+                ),
             ),
-            spec=ScheduleSpec(
-                cron_expressions=[CRON_SCHEDULE],
-            ),
-            options=ScheduleOptions(),
-        ),
-    )
-    logger.info("Janitor cron schedule created: %s", CRON_SCHEDULE)
+        )
+        logger.info("Janitor cron schedule created: %s", CRON_SCHEDULE)
+    except Exception as e:
+        if "already exists" in str(e):
+            logger.info("Janitor cron schedule already exists")
+        else:
+            logger.warning("Could not create schedule: %s", e)
 
 
 async def main():
