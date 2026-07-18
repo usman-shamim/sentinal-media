@@ -1,27 +1,30 @@
 """Temporal Workflows for durable sentinel dispatch.
 
 Replaces FastAPI BackgroundTasks — survives container crashes and restarts.
+
+NOTE: Activities must use lazy imports because Temporal's sandbox
+restricts non-deterministic modules like httpx and asyncpg inside
+workflow definitions. All I/O lives in activities.
 """
 
-import asyncio
-import json
 import logging
-import os
 from datetime import timedelta
 from typing import Optional
 
-import httpx
+import asyncio
 from temporalio import activity, workflow
 
 logger = logging.getLogger("temporal-workflows")
 
-# ── Activity: Send approval request to n8n/Telegram ─────────────────────
+
+# ── Activities (import I/O modules lazily) ──────────────────────────────
 
 @activity.defn
 async def send_approval_activity(draft_id: str, content: str,
                                   platforms: list[str],
                                   n8n_url: str, chat_id: str,
                                   timeout_sec: int = 15) -> bool:
+    import httpx
     try:
         async with httpx.AsyncClient(timeout=timeout_sec) as client:
             resp = await client.post(
@@ -39,14 +42,13 @@ async def send_approval_activity(draft_id: str, content: str,
         return False
 
 
-# ── Activity: Dispatch content to Postiz ────────────────────────────────
-
 @activity.defn
 async def postiz_dispatch_activity(draft_id: str, content: str,
                                     platforms: list[str],
                                     postiz_url: str, postiz_key: str,
                                     timeout_sec: int = 15) -> dict:
-    """Dispatch content to Postiz for one or more platforms."""
+    import httpx
+    import os
 
     PLATFORMS = {
         "x": {"settings": {"__type": "x", "who_can_reply_post": "everyone"}, "limit": 280},
@@ -137,11 +139,10 @@ def _adapt_content(content: str, platform: str, limit: int) -> list[dict]:
     return [{"content": truncated}]
 
 
-# ── Activity: Send HTTP callback ────────────────────────────────────────
-
 @activity.defn
 async def send_callback_activity(url: str, payload: dict,
                                    timeout_sec: int = 10) -> bool:
+    import httpx
     if not url:
         return True
     try:
@@ -153,12 +154,12 @@ async def send_callback_activity(url: str, payload: dict,
         return False
 
 
-# ── Activity: Log to database ───────────────────────────────────────────
-
 @activity.defn
 async def db_log_activity(draft_id: str, content: str,
                            platforms: list, result: dict) -> None:
     import asyncpg
+    import json
+    import os
     dsn = os.getenv("DATABASE_URL", "")
     if not dsn:
         logger.warning("DATABASE_URL not set, skipping db log")
@@ -181,14 +182,14 @@ async def db_log_activity(draft_id: str, content: str,
         logger.error("db log failed: %s", e)
 
 
-# ── Workflow: Approval + Dispatch (replaces background_tasks) ──────────
+# ── Workflow ────────────────────────────────────────────────────────────
 
 @workflow.defn
 class ApprovalWorkflow:
     """Handles the approval request and follow-up dispatch.
 
     This workflow is started from /dispatch and continues running even
-    if the sentinel container restarts.
+    if the sentinel container restarts. It waits for a signal from /callback.
     """
 
     @workflow.run
@@ -196,6 +197,7 @@ class ApprovalWorkflow:
                   reply_to: Optional[str], n8n_url: str, chat_id: str,
                   postiz_url: str, postiz_key: str,
                   approval_timeout: int = 300) -> dict:
+
         # Step 1: Send approval request to n8n/Telegram
         sent = await workflow.execute_activity(
             send_approval_activity,
@@ -206,15 +208,13 @@ class ApprovalWorkflow:
         if not sent:
             logger.warning("Approval request failed for %s", draft_id)
 
-        # Step 2: Wait for callback (external signal via /callback -> workflow signal)
-        # The /callback endpoint will signal this workflow with approval decision
+        # Step 2: Wait for callback signal from /callback endpoint
         try:
-            signal = await workflow.wait_for_signal(
+            decision = await workflow.wait_for_signal(
                 "approval_decision",
                 timeout=timedelta(seconds=approval_timeout),
             )
         except asyncio.TimeoutError:
-            # If callback never comes, mark as expired
             logger.warning("Approval %s timed out", draft_id)
             if reply_to:
                 await workflow.execute_activity(
@@ -225,10 +225,10 @@ class ApprovalWorkflow:
                 )
             return {"status": "expired", "draft_id": draft_id}
 
-        decision = signal.get("status", "rejected")
-        reason = signal.get("reason")
+        status = decision.get("status", "rejected")
+        reason = decision.get("reason")
 
-        if decision != "approved":
+        if status != "approved":
             if reply_to:
                 await workflow.execute_activity(
                     send_callback_activity,
