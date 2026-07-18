@@ -574,8 +574,8 @@ async def dispatch(req: DispatchRequest, background_tasks: BackgroundTasks, requ
         try:
             handle = await temporal_client.start_workflow(
                 ApprovalWorkflow.run,
-                draft_id,
                 args=[
+                    draft_id,
                     req.content,
                     req.platforms,
                     req.reply_to,
