@@ -220,6 +220,16 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  knowledge-sentinel:
+    build: ../knowledge-sentinel
+    ports:
+      - "8100:8100"
+    environment:
+      SENTINEL_PORT: 8100
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WORKER_COGNEE_URL: ${WORKER_COGNEE_URL:-http://cognee-worker:8200}
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   n8n_data:
