@@ -53,10 +53,11 @@ services:
       - "5678:5678"
     environment:
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_HOST: ${N8N_HOST:-n8n.usman-odysseus.duckdns.org}
       N8N_PORT: 5678
-      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
-      WEBHOOK_URL: ${N8N_WEBHOOK_PUBLIC_URL}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-https}
+      N8N_SECURE_COOKIE: true
+      WEBHOOK_URL: ${N8N_WEBHOOK_PUBLIC_URL:-https://n8n.usman-odysseus.duckdns.org}
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: 5432
