@@ -223,7 +223,7 @@ services:
   knowledge-sentinel:
     build: ../knowledge-sentinel
     ports:
-      - "8100:8100"
+      - "8104:8100"
     environment:
       SENTINEL_PORT: 8100
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
