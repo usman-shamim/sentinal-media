@@ -220,6 +220,68 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Cognee (knowledge worker) ──
+  cognee-postgres:
+    image: pgvector/pgvector:pg16-trixie
+    container_name: cognee-postgres
+    environment:
+      POSTGRES_USER: cognee
+      POSTGRES_PASSWORD: cognee
+      POSTGRES_DB: cognee_db
+    volumes:
+      - cognee-pg-data:/var/lib/postgresql/data
+    expose:
+      - 5432
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cognee -d cognee_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  cognee-worker:
+    build: ../../workers/cognee-worker
+    container_name: cognee-worker
+    ports:
+      - "8200:8000"
+    environment:
+      WORKER_PORT: 8000
+      WORKER_HOST: 0.0.0.0
+      COGNEE_DATA_DIR: /data/.cognee
+      COGNEE_SKIP_CONNECTION_TEST: "true"
+      DB_PROVIDER: postgres
+      DB_HOST: cognee-postgres
+      DB_PORT: 5432
+      DB_USERNAME: cognee
+      DB_PASSWORD: cognee
+      DB_NAME: cognee_db
+      VECTOR_DB_PROVIDER: pgvector
+      VECTOR_DB_HOST: cognee-postgres
+      VECTOR_DB_PORT: 5432
+      VECTOR_DB_USERNAME: cognee
+      VECTOR_DB_PASSWORD: cognee
+      VECTOR_DB_NAME: cognee_db
+      GRAPH_DATABASE_PROVIDER: postgres
+      GRAPH_DATABASE_HOST: cognee-postgres
+      GRAPH_DATABASE_PORT: 5432
+      GRAPH_DATABASE_USERNAME: cognee
+      GRAPH_DATABASE_PASSWORD: cognee
+      GRAPH_DATABASE_NAME: cognee_db
+      CACHE_BACKEND: postgres
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      LLM_MODEL: ${LLM_MODEL:-deepseek-v4-flash}
+      LLM_ENDPOINT: ${LLM_ENDPOINT:-https://opencode.ai/zen/go/v1}
+      LLM_API_KEY: ${LLM_API_KEY}
+      EMBEDDING_PROVIDER: fastembed
+      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      EMBEDDING_DIMENSIONS: 384
+    volumes:
+      - cognee-worker-data:/data
+    depends_on:
+      cognee-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   knowledge-sentinel:
     build: ../knowledge-sentinel
     ports:
@@ -227,7 +289,10 @@ services:
     environment:
       SENTINEL_PORT: 8100
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      WORKER_COGNEE_URL: ${WORKER_COGNEE_URL:-http://cognee-worker:8200}
+      WORKER_COGNEE_URL: ${WORKER_COGNEE_URL:-http://cognee-worker:8000}
+    depends_on:
+      cognee-worker:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
@@ -239,3 +304,5 @@ volumes:
   postiz-redis-data:
   temporal-es-data:
   temporal-pg-data:
+  cognee-pg-data:
+  cognee-worker-data:
